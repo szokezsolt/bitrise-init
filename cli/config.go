@@ -70,7 +70,6 @@ func initConfig(c *cli.Context) error {
 	log.Infoft(colorstring.Yellowf("output format: %s", formatStr))
 	fmt.Println()
 
-	// normalize working dir path
 	currentDir, err := pathutil.AbsPath("./")
 	if err != nil {
 		return fmt.Errorf("Failed to expand path (%s), error: %s", outputDir, err)
@@ -84,7 +83,6 @@ func initConfig(c *cli.Context) error {
 		return fmt.Errorf("Failed to expand path (%s), error: %s", outputDir, err)
 	}
 
-	// normalize output path
 	if outputDir == "" {
 		outputDir = filepath.Join(currentDir, defaultScanResultDir)
 	}

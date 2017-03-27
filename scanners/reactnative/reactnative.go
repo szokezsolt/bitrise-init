@@ -3,15 +3,13 @@ package reactnative
 import (
 	"fmt"
 
-	"gopkg.in/yaml.v2"
+	"path/filepath"
 
 	"github.com/bitrise-core/bitrise-init/models"
 	"github.com/bitrise-core/bitrise-init/scanners/android"
 	"github.com/bitrise-core/bitrise-init/scanners/ios"
-	"github.com/bitrise-core/bitrise-init/steps"
+	"github.com/bitrise-core/bitrise-init/scanners/macos"
 	"github.com/bitrise-core/bitrise-init/utility"
-	bitriseModels "github.com/bitrise-io/bitrise/models"
-	envmanModels "github.com/bitrise-io/envman/models"
 	"github.com/bitrise-io/go-utils/log"
 )
 
@@ -52,15 +50,15 @@ const (
 
 // Scanner ...
 type Scanner struct {
-	searchDir          string
-	fileList           []string
-	androidProjectFile string
-	iOSProjectFile     string
-	androidProjectDir  string
-	iOSProjectDir      string
-	packageJSONFile    string
-	iosScanner         *ios.Scanner
-	androidScanner     *android.Scanner
+	reactNativeProjectRootDir string
+	searchDir                 string
+	androidProjectFile        string
+	iOSProjectFile            string
+	androidProjectDir         string
+	iOSProjectDir             string
+	packageJSONFile           string
+	iosScanner                *ios.Scanner
+	androidScanner            *android.Scanner
 }
 
 // NewScanner ...
@@ -73,29 +71,23 @@ func (scanner Scanner) Name() string {
 	return ScannerName
 }
 
-// Print ...
-func (scanner Scanner) Print() {
-	log.Printft("searchDir: %s", scanner.searchDir)
-	log.Printft("androidProjectFile: %s", scanner.androidProjectFile)
-	log.Printft("iOSProjectFile: %s", scanner.iOSProjectFile)
-	log.Printft("androidProjectDir: %s", scanner.androidProjectDir)
-	log.Printft("iOSProjectDir: %s", scanner.iOSProjectDir)
-	log.Printft("packageJSONFile: %s", scanner.packageJSONFile)
-}
-
 // DetectPlatform ...
 func (scanner *Scanner) DetectPlatform(searchDir string) (bool, error) {
 	scanner.searchDir = searchDir
 
+	log.Infoft("Searching for React Native project files")
+
+	//get all files in searchDir
 	fileList, err := utility.ListPathInDirSortedByComponents(searchDir)
 	if err != nil {
 		return false, fmt.Errorf("failed to search for files in (%s), error: %s", searchDir, err)
 	}
-	scanner.fileList = fileList
 
 	reactNativeProjectFiles := []string{}
 
-	// check android project JS and native android dir
+	//
+	// Android
+	// get android.index.js file
 	androidProjectFiles, err := utility.FilterPaths(fileList,
 		utility.AllowReactAndroidProjectBaseFilter,
 		utility.ForbidReactTestsDir,
@@ -103,19 +95,36 @@ func (scanner *Scanner) DetectPlatform(searchDir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+
 	if len(androidProjectFiles) > 0 {
+		// found android.index.js file, check if native project dir exists
+		log.Printft("React Native android project file found")
+		log.Printft("- %s", androidProjectFiles[0])
+
 		if androidProjDir := utility.GetReactNativeAndroidProjectDirInDirectoryOf(androidProjectFiles[0]); androidProjDir != "" {
+			log.Printft("Android project dir found")
+			log.Printft("- %s", androidProjDir)
+			log.Printft("")
+			log.Infoft(">Run scanner: %s", android.ScannerName)
+
 			if detected, err := scanner.androidScanner.DetectPlatform(androidProjDir); err != nil {
 				return false, err
 			} else if detected {
 				scanner.androidProjectDir = androidProjDir
+				reactNativeProjectFiles = append(reactNativeProjectFiles, androidProjectFiles[0])
+			} else {
+				log.Warnft("Android gradle file not found")
 			}
+		} else {
+			log.Warnft("Android project dir not found")
 		}
+
 		scanner.androidProjectFile = androidProjectFiles[0]
-		reactNativeProjectFiles = append(reactNativeProjectFiles, scanner.androidProjectFile)
 	}
 
-	// check ios project JS and native android dir
+	//
+	// iOS
+	// check ios project JS
 	iosProjectFiles, err := utility.FilterPaths(fileList,
 		utility.AllowReactiOSProjectBaseFilter,
 		utility.ForbidReactTestsDir,
@@ -124,15 +133,25 @@ func (scanner *Scanner) DetectPlatform(searchDir string) (bool, error) {
 		return false, err
 	}
 	if len(iosProjectFiles) > 0 {
+		log.Printft("")
+		log.Printft("React Native iOS project file found")
+		log.Printft("- %s", iosProjectFiles[0])
+
 		if iOSProjDir := utility.GetReactNativeiOSProjectDirInDirectoryOf(iosProjectFiles[0]); iOSProjDir != "" {
+			log.Printft("iOS project dir found")
+			log.Printft("- %s", iOSProjDir)
+			log.Printft("")
+			log.Infoft(">Run scanner: %s", ios.ScannerName)
+
 			if detected, err := scanner.iosScanner.DetectPlatform(iOSProjDir); err != nil {
 				return false, err
 			} else if detected {
 				scanner.iOSProjectDir = iOSProjDir
+				reactNativeProjectFiles = append(reactNativeProjectFiles, iosProjectFiles[0])
 			}
 		}
+
 		scanner.iOSProjectFile = iosProjectFiles[0]
-		reactNativeProjectFiles = append(reactNativeProjectFiles, scanner.iOSProjectFile)
 	}
 
 	packagesJSONFiles, err := utility.FilterPaths(fileList, utility.AllowReactNpmPackageBaseFilter)
@@ -143,7 +162,7 @@ func (scanner *Scanner) DetectPlatform(searchDir string) (bool, error) {
 		scanner.packageJSONFile = packagesJSONFiles[0]
 	}
 
-	log.Infoft("Searching for React Native project files")
+	log.Printft("")
 	log.Printft("%d React Native project files found", len(reactNativeProjectFiles))
 
 	for _, reactNativeProjectFile := range reactNativeProjectFiles {
@@ -155,6 +174,18 @@ func (scanner *Scanner) DetectPlatform(searchDir string) (bool, error) {
 		return false, nil
 	}
 
+	// get root project dir, and ensure projects are in the same dir
+	if len(reactNativeProjectFiles) == 2 {
+		projectRootDir := filepath.Dir(reactNativeProjectFiles[0])
+		for _, reactNativeProjectFile := range reactNativeProjectFiles {
+			projectFileDir := filepath.Dir(reactNativeProjectFile)
+			if projectFileDir != projectRootDir {
+				log.Errorft("React Native projects has different root directory")
+				return false, nil
+			}
+		}
+	}
+
 	log.Doneft("Platform detected")
 	return true, nil
 }
@@ -162,6 +193,23 @@ func (scanner *Scanner) DetectPlatform(searchDir string) (bool, error) {
 // Options ...
 func (scanner *Scanner) Options() (models.OptionModel, models.Warnings, error) {
 	warnings := models.Warnings{}
+	iosOptions, iosWarnings, err := scanner.iosScanner.Options()
+	if err != nil {
+		return models.OptionModel{}, models.Warnings{}, err
+	}
+	androidOptions, androidWarnings, err := scanner.androidScanner.Options()
+	if err != nil {
+		return models.OptionModel{}, models.Warnings{}, err
+	}
+
+	both := models.OptionModel{}
+
+	projectPathOption := models.NewOptionModel("Platform", "")
+	projectPathOption.ValueMap["iOS"] = iosOptions
+	projectPathOption.ValueMap["Android"] = androidOptions
+	projectPathOption.ValueMap["Both"] = both
+
+	return projectPathOption, append(androidWarnings, iosWarnings...), nil
 
 	optionID := ScannerName
 
@@ -233,98 +281,17 @@ func (scanner *Scanner) Options() (models.OptionModel, models.Warnings, error) {
 
 // DefaultOptions ...
 func (scanner *Scanner) DefaultOptions() models.OptionModel {
-	configOption := models.NewEmptyOptionModel()
-	configOption.Config = defaultConfigName
-
-	projectPathOption := models.NewOptionModel(projectPathTitle, projectPathEnvKey)
-	schemeOption := models.NewOptionModel(schemeTitle, schemeEnvKey)
-
-	schemeOption.ValueMap["_"] = configOption
-	projectPathOption.ValueMap["_"] = schemeOption
-
-	return projectPathOption
+	return models.OptionModel{}
 }
 
 // Configs ...
 func (scanner *Scanner) Configs() (models.BitriseConfigMap, error) {
-
-	bitriseDataMap := models.BitriseConfigMap{}
-
-	return bitriseDataMap, nil
+	return models.BitriseConfigMap{}, nil
 }
 
 // DefaultConfigs ...
 func (scanner *Scanner) DefaultConfigs() (models.BitriseConfigMap, error) {
-	//
-	// Prepare steps
-	prepareSteps := []bitriseModels.StepListItemModel{}
-
-	// ActivateSSHKey
-	prepareSteps = append(prepareSteps, steps.ActivateSSHKeyStepListItem())
-
-	// GitClone
-	prepareSteps = append(prepareSteps, steps.GitCloneStepListItem())
-
-	// Script
-	prepareSteps = append(prepareSteps, steps.ScriptSteplistItem(steps.ScriptDefaultTitle))
-
-	// CertificateAndProfileInstaller
-	prepareSteps = append(prepareSteps, steps.CertificateAndProfileInstallerStepListItem())
-
-	// CocoapodsInstall
-	prepareSteps = append(prepareSteps, steps.CocoapodsInstallStepListItem())
-
-	// RecreateUserSchemes
-	prepareSteps = append(prepareSteps, steps.RecreateUserSchemesStepListItem([]envmanModels.EnvironmentItemModel{
-		envmanModels.EnvironmentItemModel{projectPathKey: "$" + projectPathEnvKey},
-	}))
-	// ----------
-
-	//
-	// CI steps
-	ciSteps := append([]bitriseModels.StepListItemModel{}, prepareSteps...)
-
-	// XcodeTest
-	ciSteps = append(ciSteps, steps.XcodeTestStepListItem([]envmanModels.EnvironmentItemModel{
-		envmanModels.EnvironmentItemModel{projectPathKey: "$" + projectPathEnvKey},
-		envmanModels.EnvironmentItemModel{schemeKey: "$" + schemeEnvKey},
-	}))
-
-	// DeployToBitriseIo
-	ciSteps = append(ciSteps, steps.DeployToBitriseIoStepListItem())
-	// ----------
-
-	//
-	// Deploy steps
-	deploySteps := append([]bitriseModels.StepListItemModel{}, prepareSteps...)
-
-	// XcodeTest
-	deploySteps = append(deploySteps, steps.XcodeTestStepListItem([]envmanModels.EnvironmentItemModel{
-		envmanModels.EnvironmentItemModel{projectPathKey: "$" + projectPathEnvKey},
-		envmanModels.EnvironmentItemModel{schemeKey: "$" + schemeEnvKey},
-	}))
-
-	// XcodeArchive
-	deploySteps = append(deploySteps, steps.XcodeArchiveStepListItem([]envmanModels.EnvironmentItemModel{
-		envmanModels.EnvironmentItemModel{projectPathKey: "$" + projectPathEnvKey},
-		envmanModels.EnvironmentItemModel{schemeKey: "$" + schemeEnvKey},
-	}))
-
-	// DeployToBitriseIo
-	deploySteps = append(deploySteps, steps.DeployToBitriseIoStepListItem())
-	// ----------
-
-	config := models.BitriseDataWithCIAndCDWorkflow([]envmanModels.EnvironmentItemModel{}, ciSteps, deploySteps)
-	data, err := yaml.Marshal(config)
-	if err != nil {
-		return models.BitriseConfigMap{}, err
-	}
-
-	configName := defaultConfigName
-	bitriseDataMap := models.BitriseConfigMap{}
-	bitriseDataMap[configName] = string(data)
-
-	return bitriseDataMap, nil
+	return models.BitriseConfigMap{}, nil
 }
 
 // IgnoreScanners ...
@@ -340,6 +307,7 @@ func (scanner *Scanner) IgnoreScanners() []string {
 
 	if isIOSBuildAvailable {
 		ignoreScanners = append(ignoreScanners, ios.ScannerName)
+		ignoreScanners = append(ignoreScanners, macos.ScannerName)
 	}
 
 	return ignoreScanners
